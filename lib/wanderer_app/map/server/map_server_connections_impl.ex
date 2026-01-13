@@ -559,9 +559,15 @@ defmodule WandererApp.Map.Server.ConnectionsImpl do
       when not is_nil(location) and not is_nil(old_location) and
              not is_nil(old_location.solar_system_id) and
              location.solar_system_id != old_location.solar_system_id do
-    {:ok, character} = WandererApp.Character.get_character(character_id)
+    # Only fetch character if character_id is provided
+    character = if not is_nil(character_id) do
+      {:ok, char} = WandererApp.Character.get_character(character_id)
+      char
+    else
+      nil
+    end
 
-    if not is_manual do
+    if not is_manual and not is_nil(character) do
       :telemetry.execute([:wanderer_app, :map, :character, :jump], %{count: 1}, %{})
 
       {:ok, _} =
@@ -647,7 +653,6 @@ defmodule WandererApp.Map.Server.ConnectionsImpl do
           solar_system_target: location.solar_system_id
         })
 
-        # ADDITIVE: Also broadcast to external event system (webhooks/WebSocket)
         WandererApp.ExternalEvents.broadcast(map_id, :connection_added, %{
           connection_id: connection.id,
           solar_system_source_id: old_location.solar_system_id,
@@ -658,13 +663,16 @@ defmodule WandererApp.Map.Server.ConnectionsImpl do
           time_status: connection.time_status
         })
 
-        WandererApp.User.ActivityTracker.track_map_event(:map_connection_added, %{
-          character_id: character_id,
-          user_id: character.user_id,
-          map_id: map_id,
-          solar_system_source_id: old_location.solar_system_id,
-          solar_system_target_id: location.solar_system_id
-        })
+        # Track activity only if character_id is present
+        if not is_nil(character_id) do
+          WandererApp.User.ActivityTracker.track_map_event(:map_connection_added, %{
+            character_id: character_id,
+            user_id: character.user_id,
+            map_id: map_id,
+            solar_system_source_id: old_location.solar_system_id,
+            solar_system_target_id: location.solar_system_id
+          })
+        end
 
         if retrigger_layout do
           {:ok, %{map_opts: map_opts}} = WandererApp.Map.get_map_state(map_id)

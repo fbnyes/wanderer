@@ -923,31 +923,65 @@ defmodule WandererApp.Map.Server.SystemsImpl do
             end
 
           _ ->
-            case WandererApp.CachedInfo.get_system_static_info(solar_system_id) do
-              {:ok, solar_system_info} ->
-                @ddrt.insert(
-                  {solar_system_id,
-                   WandererApp.Map.PositionCalculator.get_system_bounding_rect(%{
-                     position_x: x,
-                     position_y: y
-                   })},
-                  rtree_name
-                )
+            # Check if this is a placeholder system (negative ID)
+            if solar_system_id < 0 do
+              # Placeholder system - create without static info lookup
+              system_name = Map.get(system_info, :name, "Unknown")
 
-                WandererApp.MapSystemRepo.create(%{
-                  map_id: map_id,
-                  solar_system_id: solar_system_id,
-                  name: solar_system_info.solar_system_name,
-                  position_x: x,
-                  position_y: y
-                })
+              @ddrt.insert(
+                {solar_system_id,
+                 WandererApp.Map.PositionCalculator.get_system_bounding_rect(%{
+                   position_x: x,
+                   position_y: y
+                 })},
+                rtree_name
+              )
 
-              {:error, reason} ->
-                Logger.error(
-                  "Failed to get system static info for #{solar_system_id}: #{inspect(reason)}"
-                )
+              WandererApp.MapSystemRepo.create(%{
+                map_id: map_id,
+                solar_system_id: solar_system_id,
+                name: system_name,
+                position_x: x,
+                position_y: y
+              })
+              |> then(fn result ->
+                case result do
+                  {:ok, system} ->
+                    # Update with any additional fields if provided
+                    system
+                    |> maybe_update_extra_info(extra_info)
+                    |> then(&{:ok, &1})
+                  error -> error
+                end
+              end)
+            else
+              # Real EVE system - fetch static info
+              case WandererApp.CachedInfo.get_system_static_info(solar_system_id) do
+                {:ok, solar_system_info} ->
+                  @ddrt.insert(
+                    {solar_system_id,
+                     WandererApp.Map.PositionCalculator.get_system_bounding_rect(%{
+                       position_x: x,
+                       position_y: y
+                     })},
+                    rtree_name
+                  )
 
-                {:error, :system_info_not_found}
+                  WandererApp.MapSystemRepo.create(%{
+                    map_id: map_id,
+                    solar_system_id: solar_system_id,
+                    name: solar_system_info.solar_system_name,
+                    position_x: x,
+                    position_y: y
+                  })
+
+                {:error, reason} ->
+                  Logger.error(
+                    "Failed to get system static info for #{solar_system_id}: #{inspect(reason)}"
+                  )
+
+                  {:error, :system_info_not_found}
+              end
             end
         end
 

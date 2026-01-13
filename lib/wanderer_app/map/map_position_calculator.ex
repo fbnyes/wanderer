@@ -339,7 +339,15 @@ defmodule WandererApp.Map.PositionCalculator do
         {children_pos, children_names, total_children_breadth, new_visited} = children
            |> Enum.with_index(1)
            |> Enum.reduce({%{}, %{}, 0.0, visited}, fn {child_id, index}, {acc_pos, acc_names, acc_b, acc_visited} ->
-             child_path = if path == "0", do: "#{index}", else: "#{path}-#{index}"
+             # Build hierarchical name: strip dashes from parent, concatenate, then add dash before child number
+              # Examples: "0" -> "1", "1" -> "1-1", "1-1" -> "11-1", "11-1" -> "111-1"
+              child_path = if path == "0" do
+                "#{index}"
+              else
+                # Remove all dashes from parent path, then append dash and child index
+                parent_prefix = String.replace(path, "-", "")
+                "#{parent_prefix}-#{index}"
+              end
 
              {child_x, child_y} = case layout do
                :top_to_bottom -> {actual_x + acc_b, actual_y + @h + @m_y}

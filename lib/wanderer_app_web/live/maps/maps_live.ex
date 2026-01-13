@@ -575,7 +575,8 @@ defmodule WandererAppWeb.MapsLive do
         "restrict_offline_showing",
         "allowed_copy_for",
         "allowed_paste_for",
-        "auto_layout"
+        "auto_layout",
+        "create_placeholder_systems"
       ])
 
     {:ok, updated_map} = WandererApp.MapRepo.update_options(map, options)

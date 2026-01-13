@@ -107,7 +107,9 @@ defmodule WandererApp.Map.Server.SignaturesImpl do
     |> Enum.each(fn sig ->
       case existing_index[sig.eve_id] do
         nil ->
-          MapSystemSignature.create!(sig)
+          created_sig = MapSystemSignature.create!(sig)
+          # Try to create placeholder system for wormhole signatures
+          maybe_create_placeholder_system(map_id, created_sig, system)
 
         _ ->
           :noop
@@ -174,6 +176,9 @@ defmodule WandererApp.Map.Server.SignaturesImpl do
     # This prevents deleting connections when old/orphan signatures are removed
     is_active = sig.linked_system_id && is_active_signature_for_target?(map_id, sig)
 
+    # Check if linked system is a placeholder (negative ID)
+    is_placeholder = sig.linked_system_id && sig.linked_system_id < 0
+
     # Only delete connection if this signature is the active one
     if delete_conn? && is_active do
       ConnectionsImpl.delete_connection(map_id, %{
@@ -188,6 +193,15 @@ defmodule WandererApp.Map.Server.SignaturesImpl do
         solar_system_id: sig.linked_system_id,
         linked_sig_eve_id: nil
       })
+    end
+
+    # If the linked system is a placeholder, delete it
+    if is_placeholder do
+      Logger.info(
+        "[Placeholder] Deleting placeholder system #{sig.linked_system_id} for signature #{sig.eve_id}"
+      )
+
+      SystemsImpl.delete_systems(map_id, [sig.linked_system_id], nil, nil)
     end
 
     sig
@@ -217,10 +231,29 @@ defmodule WandererApp.Map.Server.SignaturesImpl do
       {:ok, updated} ->
         maybe_update_connection_time_status(map_id, existing, updated)
         maybe_update_connection_mass_status(map_id, existing, updated)
+
+        # If signature was updated to become a wormhole, check if we should create a placeholder
+        maybe_create_placeholder_on_update(map_id, existing, updated)
+
         :ok
 
       {:error, reason} ->
         Logger.error("Failed to update signature #{existing.id}: #{inspect(reason)}")
+    end
+  end
+
+  # Check if signature was updated to become a wormhole and create placeholder if needed
+  defp maybe_create_placeholder_on_update(map_id, old_sig, new_sig) do
+    # Only create placeholder if:
+    # 1. The signature wasn't a wormhole before but is now
+    # 2. It doesn't already have a linked system
+    with true <- old_sig.group != "Wormhole",
+         true <- new_sig.group == "Wormhole",
+         true <- is_nil(new_sig.linked_system_id),
+         {:ok, system} <- MapSystem.by_id(new_sig.system_id) do
+      maybe_create_placeholder_system(map_id, new_sig, system)
+    else
+      _ -> :ok
     end
   end
 
@@ -337,5 +370,113 @@ defmodule WandererApp.Map.Server.SignaturesImpl do
     custom_info_json
     |> Jason.decode!()
     |> Map.get("time_status")
+  end
+
+  # Placeholder System Creation Logic
+
+  @doc """
+  Creates a placeholder system for a wormhole signature if:
+  1. The map has placeholder systems enabled
+  2. The signature is a wormhole
+  3. The signature doesn't already have a linked system
+  """
+  defp maybe_create_placeholder_system(map_id, signature, parent_system) do
+    Logger.info("[Placeholder] Checking if should create placeholder for signature #{signature.eve_id}")
+
+    with {:ok, options} <- WandererApp.Map.get_options(map_id),
+         true <- Map.get(options, "create_placeholder_systems", "false") == "true",
+         true <- signature.group == "Wormhole",
+         true <- is_nil(signature.linked_system_id) do
+      Logger.info("[Placeholder] Creating placeholder for signature #{signature.eve_id} in system #{parent_system.solar_system_id}")
+      create_placeholder_system(map_id, signature, parent_system)
+    else
+      {:ok, options} ->
+        Logger.info("[Placeholder] Setting check failed. create_placeholder_systems = #{inspect(Map.get(options, "create_placeholder_systems"))}")
+        :ok
+      false ->
+        Logger.info("[Placeholder] Condition check failed for signature #{signature.eve_id}. group=#{inspect(signature.group)}, linked_system_id=#{inspect(signature.linked_system_id)}")
+        :ok
+      error ->
+        Logger.info("[Placeholder] Other error: #{inspect(error)}")
+        :ok
+    end
+  end
+
+  defp create_placeholder_system(map_id, signature, parent_system) do
+    placeholder_id = generate_placeholder_id(map_id)
+
+    # Calculate position with offset from parent
+    offset = 150
+    position_x = parent_system.position_x + offset
+    position_y = parent_system.position_y + offset
+
+    # Create the placeholder system
+    case SystemsImpl.add_system(
+           map_id,
+           %{
+             solar_system_id: placeholder_id,
+             name: "Unknown (#{signature.type || "Wormhole"})",
+             coordinates: %{"x" => round(position_x), "y" => round(position_y)},
+             status: 0,
+             visible: true,
+             locked: false,
+             linked_sig_eve_id: signature.eve_id
+           },
+           nil,
+           nil,
+           []
+         ) do
+      :ok ->
+        # Link signature to placeholder
+        case update_signature_linked_system(signature, %{
+               linked_system_id: placeholder_id
+             }) do
+          {:ok, _} ->
+            # Create connection from parent to placeholder
+            ConnectionsImpl.add_connection(map_id, %{
+              solar_system_source_id: parent_system.solar_system_id,
+              solar_system_target_id: placeholder_id,
+              character_id: nil
+            })
+
+            Logger.info(
+              "[Placeholder] Created placeholder system #{placeholder_id} for signature #{signature.eve_id}"
+            )
+
+            :ok
+
+          {:error, reason} ->
+            Logger.error(
+              "[Placeholder] Failed to link signature to placeholder: #{inspect(reason)}"
+            )
+
+            :ok
+        end
+
+      {:error, reason} ->
+        Logger.error("[Placeholder] Failed to create placeholder system: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  @doc """
+  Generates a unique negative ID for a placeholder system.
+  Uses the current timestamp to ensure uniqueness.
+  """
+  defp generate_placeholder_id(map_id) do
+    # Get existing systems to find the lowest (most negative) ID
+    existing_systems = WandererApp.Map.list_systems!(map_id)
+
+    min_id =
+      existing_systems
+      |> Enum.filter(fn sys -> sys.solar_system_id < 0 end)
+      |> Enum.map(fn sys -> sys.solar_system_id end)
+      |> case do
+        [] -> 0
+        ids -> Enum.min(ids)
+      end
+
+    # Return one less than the minimum (more negative)
+    min_id - 1
   end
 end

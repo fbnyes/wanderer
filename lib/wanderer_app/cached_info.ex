@@ -95,6 +95,32 @@ defmodule WandererApp.CachedInfo do
 
   def get_system_static_info(nil), do: {:ok, nil}
 
+  # Placeholder systems (negative IDs) - return minimal fake static info
+  def get_system_static_info(solar_system_id) when is_integer(solar_system_id) and solar_system_id < 0 do
+    {:ok,
+     %{
+       solar_system_id: solar_system_id,
+       region_id: 0,
+       constellation_id: 0,
+       solar_system_name: "Unknown",
+       solar_system_name_lc: "unknown",
+       constellation_name: "Unknown",
+       region_name: "Unknown",
+       system_class: 100,
+       # Special class for placeholders
+       security: 0.0,
+       type_description: "Placeholder",
+       class_title: "Unknown",
+       is_shattered: false,
+       effect_name: nil,
+       effect_power: nil,
+       statics: nil,
+       wandering: nil,
+       triglavian_invasion_status: nil,
+       sun_type_id: nil
+     }}
+  end
+
   def get_system_static_info(solar_system_id) do
     {:ok, solar_system_id} = APIUtils.parse_int(solar_system_id)
 

@@ -7,9 +7,9 @@ export enum UserSettingsRemoteProps {
 }
 
 export type UserSettingsRemote = {
-  link_signature_on_splash: boolean;
-  select_on_spash: boolean;
-  delete_connection_with_sigs: boolean;
+  [UserSettingsRemoteProps.link_signature_on_splash]: boolean;
+  [UserSettingsRemoteProps.select_on_spash]: boolean;
+  [UserSettingsRemoteProps.delete_connection_with_sigs]: boolean;
 };
 
 export type UserSettings = UserSettingsRemote & InterfaceStoredSettings;
